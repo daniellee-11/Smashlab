@@ -1,0 +1,14 @@
+# 依赖与构建产物（CI 会重新生成）
+node_modules/
+dist/
+*.keychain
+.DS_Store
+
+# 本地/沙箱无关目录
+.codebuddy/
+
+# Capacitor 原生构建产物（已由 android/.gitignore / ios/.gitignore 覆盖大部分，
+# 这里兜底，避免误提交 gradle / Pods / DerivedData 缓存）
+android/.gradle/
+android/app/build/
+ios/App/DerivedData/

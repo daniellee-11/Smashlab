@@ -1,0 +1,80 @@
+name: Build Android APK
+
+# 云端自动打包 APK：push 到 main / 打 v* 标签 / 手动触发后，
+# GitHub Runner（自带 Android SDK）会自动构建并把 APK 作为「产物」与「Release」提供下载。
+# 本地无需安装 Android SDK。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java (JDK 17，满足 AGP 8 要求)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK（含许可）
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 SDK 平台与构建工具
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建离线资源（wasm + tfjs + jsPDF + 姿态模型）
+        run: npm run build
+
+      - name: 同步到 Android 原生工程
+        run: npx cap sync android
+
+      - name: 构建 Debug APK（无需签名，可直接安装到手机测试）
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: 上传 Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: smashlab-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+
+      # ---------- 以下仅在配置了签名密钥（仓库 Secrets）时执行 ----------
+      - name: 构建 Release APK（签名）
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: 上传 Release APK
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smashlab-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+
+      - name: 发布到 GitHub Release（仅打 tag 且已配置签名时）
+        if: ${{ startsWith(github.ref, 'refs/tags/') && secrets.KEYSTORE_BASE64 != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/release/*.apk

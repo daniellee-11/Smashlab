@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 羽毛球动作分析 · SmashLab</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🏸</span>
+      <div>
+        <h1>AI 羽毛球动作分析</h1>
+        <p class="sub">SmashLab · 姿态估计 + LSTM 分类 + 技术诊断</p>
+      </div>
+    </div>
+    <nav class="top-actions">
+      <button id="btn-cam" class="btn btn-ghost">📷 摄像头</button>
+      <button id="btn-file" class="btn btn-ghost">🎬 上传视频</button>
+      <button id="btn-train" class="btn btn-ghost">🧠 训练模型</button>
+      <button id="btn-compare" class="btn btn-ghost">📊 对比示范</button>
+      <button id="btn-export-pdf" class="btn btn-ghost">📄 导出PDF</button>
+      <button id="btn-export-png" class="btn btn-ghost">🖼 导出图</button>
+      <button id="btn-pack" class="btn btn-ghost">📱 打包</button>
+      <button id="btn-stop" class="btn btn-danger" hidden>⏹ 停止</button>
+      <input id="file-input" type="file" accept="video/*" hidden />
+    </nav>
+  </header>
+
+  <main class="layout">
+    <!-- 左：画面 -->
+    <section class="panel stage">
+      <div class="stage-wrap">
+        <video id="video" playsinline></video>
+        <canvas id="overlay"></canvas>
+        <div id="placeholder" class="placeholder">
+          <div class="ph-icon">🏸</div>
+          <p class="ph-title">开始你的第一次动作分析</p>
+          <p class="ph-sub">点击「摄像头」或「上传视频」，对着镜头打一拍，AI 会自动识别动作、判定持拍手并给出诊断。</p>
+          <ul class="ph-tips">
+            <li>✅ 侧身 45° 站位，让身体轮廓更清晰</li>
+            <li>✅ 光线充足、背景简洁，画面中只有一名运动员</li>
+            <li>✅ 首次使用点「训练模型」加载 LSTM 分类器（约几秒）</li>
+          </ul>
+        </div>
+        <div id="status" class="status-pill" hidden></div>
+      </div>
+      <div class="stage-foot">
+        <span id="fps" class="mono">-- FPS</span>
+        <span id="pose-status" class="mono">未检测到人体</span>
+      </div>
+    </section>
+
+    <!-- 右：数据面板 -->
+    <aside class="panel metrics">
+      <div class="card action-card">
+        <div class="card-label">识别动作 / 持拍手</div>
+        <div id="action-name" class="action-name">—</div>
+        <div id="action-conf" class="action-conf">置信度 --%</div>
+        <div class="hand-row">
+          <span id="hand-label" class="hand-chip">自动检测中…</span>
+          <select id="hand-override" class="mini-select">
+            <option value="auto">自动</option>
+            <option value="L">左手</option>
+            <option value="R">右手</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card score-card">
+        <div class="card-label">动作评分</div>
+        <div class="score-ring">
+          <svg viewBox="0 0 120 120">
+            <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+            <circle id="ring" class="ring-fg" cx="60" cy="60" r="52"></circle>
+          </svg>
+          <div id="score-num" class="score-num">--</div>
+        </div>
+        <div id="score-tag" class="score-tag">待分析</div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">实时关节数据</div>
+        <div class="metric-grid">
+          <div class="metric"><span class="m-name">肩抬高角</span><span id="m-shoulder" class="m-val">--°</span></div>
+          <div class="metric"><span class="m-name">肘伸展度</span><span id="m-elbow" class="m-val">--°</span></div>
+          <div class="metric"><span class="m-name">膝弯曲度</span><span id="m-knee" class="m-val">--°</span></div>
+          <div class="metric"><span class="m-name">躯干前倾</span><span id="m-trunk" class="m-val">--°</span></div>
+          <div class="metric"><span class="m-name">手腕高度</span><span id="m-wrist" class="m-val">--</span></div>
+          <div class="metric"><span class="m-name">挥拍速度</span><span id="m-speed" class="m-val">--</span></div>
+        </div>
+      </div>
+
+      <div class="card report-card">
+        <div class="card-label">AI 诊断报告</div>
+        <ul id="report" class="report">
+          <li class="report-empty">开始分析后，这里会逐条列出技术要点与改进建议。</li>
+        </ul>
+      </div>
+
+      <div class="card ref-card" id="ref-panel" hidden>
+        <div class="card-label">标准示范吻合度 <span id="ref-match" class="ref-match">--%</span></div>
+        <ul id="dev-list" class="dev-list"></ul>
+      </div>
+
+      <div class="card train-card">
+        <div class="card-label">🧠 LSTM 分类模型</div>
+        <div id="train-status" class="train-status">未加载</div>
+        <div class="bar"><div id="train-bar" class="bar-fill"></div></div>
+        <div class="capture-row">
+          <select id="capture-action" class="mini-select">
+            <option value="smash">杀球</option>
+            <option value="clear">高远球</option>
+            <option value="drop">吊球</option>
+            <option value="net">平抽/网前</option>
+            <option value="defense">防守挑球</option>
+            <option value="ready">准备/移动</option>
+          </select>
+          <button id="btn-capture" class="btn btn-mini">记录这一拍</button>
+        </div>
+        <div id="capture-count" class="cap-count">已记录 0 段</div>
+        <button id="btn-retrain" class="btn btn-mini wide">用我的数据重新训练</button>
+      </div>
+
+      <div class="card demo-card">
+        <div class="card-label">标准动作逐帧示范
+          <button id="btn-demo" class="btn btn-mini">⏸ 暂停</button>
+        </div>
+        <canvas id="demo-canvas" width="240" height="300" class="demo-canvas"></canvas>
+        <div id="demo-phase" class="demo-phase">—</div>
+      </div>
+    </aside>
+  </main>
+
+  <section class="panel guide">
+    <h2>动作技术要点速查</h2>
+    <div class="guide-grid" id="guide-grid"></div>
+  </section>
+
+  <footer class="footer">
+    <span>基于 MediaPipe Pose + TensorFlow.js LSTM · 全部推理在本地浏览器完成，视频不上传服务器</span>
+  </footer>
+
+  <!-- 打包说明弹窗 -->
+  <div id="pack-modal" class="modal">
+    <div class="modal-box">
+      <button id="pack-close" class="modal-close">✕</button>
+      <h2>打包为手机/桌面 App</h2>
+      <p class="modal-sub">本应用是纯前端（HTML/CSS/JS），可一键套壳发布到 iOS / Android / 桌面。</p>
+      <div class="pack-tabs">
+        <h3>✅ 已为你生成原生工程</h3>
+        <ul>
+          <li>Android 工程：<code>android/</code>（Android Studio 打开 <code>android/</code>）</li>
+          <li>iOS 工程：<code>ios/</code>（Xcode 打开 <code>ios/App/App.xcworkspace</code>）</li>
+          <li>相机权限已自动配置：Android <code>CAMERA</code> 权限、iOS <code>NSCameraUsageDescription</code></li>
+        </ul>
+        <h3>方案 A：Capacitor（推荐，已生成）</h3>
+        <pre># 1) 联网构建离线资源（含姿态模型 .task）
+npm run build
+# 2) 同步到原生工程并打相机权限补丁
+npm run make:android   # 生成/更新安卓
+npm run make:ios       # 生成/更新 iOS
+# 3) 打开 IDE 运行或打包
+npx cap open android   # Android Studio
+npx cap open ios       # Xcode（macOS）</pre>
+        <h3>方案 B：Tauri（更小、更快、Rust 内核）</h3>
+        <pre>npm i @tauri-apps/cli
+npx tauri init        # devUrl=http://localhost:8080, distDir=./dist, 前端类型=无框架
+npx tauri build       # 产出原生安装包</pre>
+        <h3>关键适配点</h3>
+        <ul>
+          <li>摄像头权限已在原生配置里声明（AndroidManifest 的 CAMERA / iOS Info.plist 的相机用途说明），原生 WebView 内 getUserMedia 可直接用。</li>
+          <li>已内置离线支持：<code>npm run build</code> 会把 MediaPipe wasm、tfjs、jsPDF 全部下载进 <code>dist/</code>；姿态模型 <code>pose_landmarker_lite.task</code> 需联网下载一次（自动放入 <code>dist/models/</code>）。</li>
+          <li>球场弱网环境：用 <code>dist/</code> 打包，启动即本地加载全部模型，无需联网。</li>
+          <li>MediaPipe 在部分手机 WebView 的 GPU 加速不可用，App 已自动回退到 CPU delegate。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "smashlab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI 羽毛球动作分析 — 纯前端（MediaPipe Pose + TensorFlow.js LSTM），可套壳为 Android / iOS / 桌面 App",
+  "scripts": {
+    "serve": "npx --yes serve -l 8080 .",
+    "build": "node build-offline.mjs",
+    "build:online": "node copy-dist.mjs",
+    "cap:init": "npx cap init SmashLab com.smashlab.app --webDir dist",
+    "cap:add:android": "npx cap add android",
+    "cap:add:ios": "npx cap add ios",
+    "cap:sync": "npx cap sync",
+    "cap:patch": "node scripts/patch-native.mjs",
+    "cap:android": "npx cap open android",
+    "cap:ios": "npx cap open ios",
+    "make:android": "npm run build && npx cap sync android && node scripts/patch-native.mjs",
+    "make:ios": "npm run build && npx cap sync ios && node scripts/patch-native.mjs",
+    "tauri:dev": "npx tauri dev",
+    "tauri:build": "npx tauri build"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.1.0",
+    "@capacitor/cli": "^6.1.0",
+    "@capacitor/core": "^6.1.0",
+    "@capacitor/ios": "^6.1.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,144 @@
+name: Build iOS IPA
+
+# 云端自动打包 iOS：push 到 main / 打 v* 标签 / 手动触发后，
+# GitHub macOS Runner（自带 Xcode + CocoaPods）会自动构建并把 IPA 作为「产物」与「Release」提供下载。
+# 本地无需 macOS / Xcode。
+#
+# 未配置签名密钥时：仍会执行「编译检查」验证工程可构建；
+# 配置签名密钥（仓库 Secrets）后：自动导入证书+描述文件，出 Ad Hoc / App Store IPA。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 选择 Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建离线资源（wasm + tfjs + jsPDF + 姿态模型）
+        run: npm run build
+
+      - name: 同步到 iOS 原生工程
+        run: npx cap sync ios
+
+      - name: 安装 CocoaPods 依赖
+        working-directory: ios/App
+        run: pod install --repo-update
+
+      # ---------- 编译检查（始终执行，验证工程可构建） ----------
+      - name: 编译检查（不签名）
+        working-directory: ios/App
+        run: >-
+          xcodebuild build
+          -workspace App.xcworkspace
+          -scheme App
+          -configuration Release
+          -sdk iphoneos
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGN_IDENTITY=""
+
+      # ---------- 以下仅在配置了签名密钥（仓库 Secrets）时执行 ----------
+      - name: 导入签名证书与描述文件
+        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 12)
+          echo "临时钥匙串密码已生成"
+
+          # 解码 P12 证书
+          echo -n "$IOS_CERTIFICATE_BASE64" | base64 --decode > cert.p12
+
+          # 解码描述文件，并安装到系统描述文件目录
+          echo -n "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > profile.mobileprovision
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< "$(security cms -D -i profile.mobileprovision)")
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp profile.mobileprovision "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+
+          # 从描述文件提取名称（导出时按名称引用）
+          PROFILE_NAME=$(security cms -D -i profile.mobileprovision | plutil -extract Name raw -)
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+
+          # 创建临时钥匙串并导入证书
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import cert.p12 -k build.keychain -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+      - name: 归档并导出 IPA（签名）
+        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        working-directory: ios/App
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD || 'ad-hoc' }}
+        run: |
+          # 生成导出配置（method 默认 ad-hoc，可在 Secrets 设 IOS_EXPORT_METHOD 改为 app-store）
+          cat > exportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>${EXPORT_METHOD}</string>
+              <key>teamID</key>
+              <string>${IOS_TEAM_ID}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.smashlab.app</key>
+                  <string>${PROFILE_NAME}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/App.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
+
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportOptionsPlist exportOptions.plist \
+            -exportPath build/ipa
+
+      - name: 上传 IPA
+        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smashlab-ios-ipa
+          path: ios/App/build/ipa/*.ipa
+
+      - name: 发布到 GitHub Release（仅打 tag 且已配置签名时）
+        if: ${{ startsWith(github.ref, 'refs/tags/') && secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ios/App/build/ipa/*.ipa
